@@ -114,7 +114,7 @@ function processMessage(phone, rawMsg) {
   // ── Detección de intención ─────────────────────────────────────────────────
 
   // Saludos / inicio
-  if (/^(hola|buenas|buenos|hey|hi|inicio|menu|menú|1|start)/.test(lower) || lower.length <= 3) {
+  if (/^(hola|buenas|buenos|hey|hi|inicio|menu|menú|start)/.test(lower)) {
     return (
       `${getGreeting()}\n\n` +
       `Bienvenido/a a *${CLINIC.nombre}* 🏥\n\n` +
@@ -123,7 +123,8 @@ function processMessage(phone, rawMsg) {
   }
 
   // Turno (opción 1 o palabras clave)
-  if (/^1$/.test(lower) || /turno|cita|reserva|sacar|pedir|agendar/.test(lower)) {
+  if (/^1$/.test(lower) || /\bturno\b|\bcita\b|\breserva\b|\bsacar\b|\bpedir\b|\bagendar\b/.test(lower)) {
+
     setSession(phone, { flow: "turno", step: "especialidad", data: {} });
     const lista = CLINIC.especialidades
       .map((e, i) => `${i + 1}. ${e.emoji} ${e.nombre}`)
