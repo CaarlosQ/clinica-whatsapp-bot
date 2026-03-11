@@ -2,7 +2,7 @@
   "name": "clinica-whatsapp-bot",
   "version": "1.0.0",
   "description": "Chatbot de WhatsApp para Clínica Salud Vital",
-  "main": "src/index.js",
+  "main": "index.js",
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js"
