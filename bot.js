@@ -1,8 +1,11 @@
 // ─── DATOS DE LA CLÍNICA ──────────────────────────────────────────────────────
 const CLINIC = {
-  nombre:    process.env.CLINIC_NAME    || "Clínica Salud Vital",
-  telefono:  process.env.CLINIC_PHONE   || "+54 11 4500-1234",
-  direccion: process.env.CLINIC_ADDRESS || "Av. Corrientes 1500, Buenos Aires",
+  nombre:         process.env.CLINIC_NAME              || "Clínica Salud Vital",
+  telefono:       process.env.CLINIC_PHONE             || "+54 11 4500-1234",
+  direccion:      process.env.CLINIC_ADDRESS           || "Av. Corrientes 1500, Buenos Aires",
+  // Número de WhatsApp de la clínica que recibe notificaciones de nuevos turnos
+  // Ejemplo: whatsapp:+5492994701481
+  notificaciones: process.env.CLINIC_NOTIFY_WHATSAPP   || null,
 
   horarios: {
     lunes:      "08:00 – 20:00",
@@ -33,8 +36,7 @@ const CLINIC = {
   ],
 };
 
-// ─── ESTADO DE SESIONES (en memoria, una por número de teléfono) ───────────────
-// En producción reemplazá esto con Redis o una base de datos
+// ─── ESTADO DE SESIONES ───────────────────────────────────────────────────────
 const sessions = new Map();
 
 function getSession(phone) {
@@ -45,8 +47,7 @@ function getSession(phone) {
 }
 
 function setSession(phone, update) {
-  const current = getSession(phone);
-  sessions.set(phone, { ...current, ...update });
+  sessions.set(phone, { ...getSession(phone), ...update });
 }
 
 function clearSession(phone) {
@@ -100,18 +101,52 @@ function horariosTexto() {
   return `⏰ *Horarios de atención:*\n\n${rows}\n\n${estado}`;
 }
 
+// ─── NOTIFICACIÓN A LA CLÍNICA ────────────────────────────────────────────────
+async function notificarClinica(turno, pacientePhone) {
+  if (!CLINIC.notificaciones) return; // Si no hay número configurado, no hace nada
+
+  try {
+    const twilio = require("twilio");
+    const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+
+    const numeroPaciente = pacientePhone.replace("whatsapp:", "");
+    const fecha = new Date().toLocaleDateString("es-AR", {
+      weekday: "long", day: "numeric", month: "long",
+    });
+
+    const mensaje =
+      `🔔 *NUEVO TURNO CONFIRMADO*\n\n` +
+      `📋 Nro: *#${turno.id}*\n` +
+      `👤 *Paciente:* ${turno.paciente}\n` +
+      `📱 *Teléfono:* ${numeroPaciente}\n` +
+      `👨‍⚕️ *Médico:* ${turno.medico}\n` +
+      `🏥 *Especialidad:* ${turno.especialidad}\n` +
+      `📅 *Fecha:* ${fecha}\n` +
+      `🕐 *Horario:* ${turno.hora} hs\n\n` +
+      `_Turno registrado automáticamente por el bot._`;
+
+    await client.messages.create({
+      from: process.env.TWILIO_WHATSAPP_FROM,
+      to:   CLINIC.notificaciones,
+      body: mensaje,
+    });
+
+    console.log(`✅ Notificación enviada a la clínica: ${CLINIC.notificaciones}`);
+  } catch (err) {
+    console.error("❌ Error al notificar a la clínica:", err.message);
+  }
+}
+
 // ─── MOTOR DE RESPUESTAS ──────────────────────────────────────────────────────
 function processMessage(phone, rawMsg) {
   const msg   = rawMsg.trim();
   const lower = msg.toLowerCase();
   const sess  = getSession(phone);
 
-  // ── Flujo de turno activo ──────────────────────────────────────────────────
+  // Flujo de turno activo
   if (sess.flow === "turno") {
     return processTurnoFlow(phone, msg, lower, sess);
   }
-
-  // ── Detección de intención ─────────────────────────────────────────────────
 
   // Saludos / inicio
   if (/^(hola|buenas|buenos|hey|hi|inicio|menu|menú|start)/.test(lower)) {
@@ -124,7 +159,6 @@ function processMessage(phone, rawMsg) {
 
   // Turno (opción 1 o palabras clave)
   if (/^1$/.test(lower) || /\bturno\b|\bcita\b|\breserva\b|\bsacar\b|\bpedir\b|\bagendar\b/.test(lower)) {
-
     setSession(phone, { flow: "turno", step: "especialidad", data: {} });
     const lista = CLINIC.especialidades
       .map((e, i) => `${i + 1}. ${e.emoji} ${e.nombre}`)
@@ -191,7 +225,7 @@ function processMessage(phone, rawMsg) {
 function processTurnoFlow(phone, msg, lower, sess) {
   const { step, data } = sess;
 
-  // PASO 1: Elegir especialidad
+  // PASO 1: Especialidad
   if (step === "especialidad") {
     const idx = parseInt(lower) - 1;
     const esp = CLINIC.especialidades[idx];
@@ -206,10 +240,7 @@ function processTurnoFlow(phone, msg, lower, sess) {
     const medico = CLINIC.medicos.find(m => m.esp === esp.nombre);
     setSession(phone, { flow: "turno", step: "horario", data: { esp, medico } });
 
-    const horarios = medico.turnos
-      .map((t, i) => `${i + 1}. 🕐 ${t} hs`)
-      .join("\n");
-
+    const horarios = medico.turnos.map((t, i) => `${i + 1}. 🕐 ${t} hs`).join("\n");
     return (
       `${esp.emoji} *${esp.nombre}*\n` +
       `Médico: *${medico.nombre}*\n\n` +
@@ -218,15 +249,13 @@ function processTurnoFlow(phone, msg, lower, sess) {
     );
   }
 
-  // PASO 2: Elegir horario
+  // PASO 2: Horario
   if (step === "horario") {
     const idx  = parseInt(lower) - 1;
     const hora = data.medico?.turnos[idx];
 
     if (!hora) {
-      const horarios = data.medico.turnos
-        .map((t, i) => `${i + 1}. 🕐 ${t} hs`)
-        .join("\n");
+      const horarios = data.medico.turnos.map((t, i) => `${i + 1}. 🕐 ${t} hs`).join("\n");
       return `Por favor elegí un horario:\n\n${horarios}`;
     }
 
@@ -234,7 +263,7 @@ function processTurnoFlow(phone, msg, lower, sess) {
     return `Perfecto ✅\n\n¿Cuál es tu *nombre completo*?`;
   }
 
-  // PASO 3: Nombre del paciente
+  // PASO 3: Nombre
   if (step === "nombre") {
     const paciente = msg.trim();
     if (paciente.length < 3) return "Por favor ingresá tu nombre completo.";
@@ -260,7 +289,18 @@ function processTurnoFlow(phone, msg, lower, sess) {
   if (step === "confirmar") {
     if (/^(si|sí|s|yes|ok|confirmar|confirmo)$/i.test(lower)) {
       const turnoId = Math.floor(Math.random() * 9000) + 1000;
+      const turno = {
+        id:          turnoId,
+        paciente:    data.paciente,
+        medico:      data.medico.nombre,
+        especialidad: data.esp.nombre,
+        hora:        data.hora,
+      };
+
       clearSession(phone);
+
+      // Notificar a la clínica por WhatsApp (async, no bloquea la respuesta)
+      notificarClinica(turno, phone);
 
       return (
         `🎉 *¡Turno confirmado!*\n\n` +
@@ -283,7 +323,6 @@ function processTurnoFlow(phone, msg, lower, sess) {
     return `Por favor respondé *SI* para confirmar o *NO* para cancelar.`;
   }
 
-  // Si el flujo está roto, resetear
   clearSession(phone);
   return processMessage(phone, msg);
 }
